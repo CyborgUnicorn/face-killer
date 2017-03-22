@@ -48,9 +48,10 @@ void servo_set( int8_t pin, int16_t value ) {
 	check_bounds(pin);
 }
 
-void servo_set_delta( int8_t pin, int16_t delta ) {
+int16_t servo_set_delta( int8_t pin, int16_t delta ) {
 	servo_values[pin] += delta;
 	check_bounds(pin);
+	return servo_values[pin];
 }
 
 int8_t servo_update(void) {

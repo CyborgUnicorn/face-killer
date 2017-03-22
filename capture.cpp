@@ -7,6 +7,7 @@
 #include <raspicam_cv.h>
 #include <stdio.h>
 
+#include "MiniPID.h"
 #include "servo.h"
 
 //#define USE_SDL
@@ -20,8 +21,13 @@ using namespace std;
 
 CascadeClassifier face_cascade;
 Ptr<BackgroundSubtractorMOG2> mog1;
+MiniPID pidX = MiniPID(1,0,0);
+MiniPID pidY = MiniPID(1,0,0);
 
-Mat detect_blobs(Mat frame) {
+int16_t currentServoX;
+int16_t currentServoY;
+	
+int8_t detect_blobs(Mat frame, Point2f &foundCenter, float &foundRadius) {
 	vector<vector<Point> > contours;
 	vector<vector<Point> > contours_poly;
 	vector<Rect> boundRect;
@@ -44,9 +50,7 @@ Mat detect_blobs(Mat frame) {
 	
 	radius.resize( contours.size() );
 	center.resize( contours.size() );
-        
-	Mat matOutput = Mat::zeros( frame.size(), CV_8UC3 );
-	
+    
 	for( int i = 0; i< contours.size(); i++ ) {
 		double penetration = contourArea(contours[i]);
 		if (penetration > 200.0) {
@@ -61,13 +65,41 @@ Mat detect_blobs(Mat frame) {
 	}
 	
 	if (maxRadius > 0 && maxRadius < 200) {
-		drawContours(matOutput, contours, maxIndex, color3, 2, 1, hierarchy, 0);
-		rectangle( matOutput, boundRect[maxIndex].tl(), boundRect[maxIndex].br(), color, 2, 1, 0 );
-		circle( matOutput, center[maxIndex], (int)maxRadius, color2, 2, 1, 0 );
-		printf("Penetrated by %f (%f)\n", maxPenetration, maxRadius);
+		//drawContours(frame, contours, maxIndex, color3, 2, 1, hierarchy, 0);
+		//rectangle( frame, boundRect[maxIndex].tl(), boundRect[maxIndex].br(), color, 2, 1, 0 );
+		//circle( frame, center[maxIndex], (int)maxRadius, color2, 2, 1, 0 );
+		//printf("Penetrated by %f (%f)\n", maxPenetration, maxRadius);
+		foundCenter.x = center[maxIndex].x;
+		foundCenter.y = center[maxIndex].y;
+		foundRadius = maxRadius;
+		return 1;
 	}
 	
-	return matOutput;
+	return -1;
+}
+
+void kill_target(Point2f targetCenter) {
+	/*
+	double servoX = pidX.getOutput(targetCenter.x, FRAME_WIDTH / 2);
+	double servoY = pidY.getOutput(FRAME_HEIGHT / 2, targetCenter.y);
+	
+	double deltaX = (servoX - currentServoX) / 2;
+	double deltaY = (servoY - currentServoY) / 2;
+	
+ 	printf("%f, %f, (%f, %f)\n", servoX, servoY, targetCenter.x, targetCenter.y); 
+	
+	currentServoX = servo_set_delta(SERVO_Y, (int16_t)deltaX); // just because
+	currentServoY = servo_set_delta(SERVO_X, (int16_t)deltaY);
+	*/
+		
+	double offsetX = targetCenter.x - FRAME_WIDTH / 2;
+	double offsetY = targetCenter.y - FRAME_HEIGHT / 2;
+
+	double deltaX = (offsetX / FRAME_WIDTH) * -200;
+	double deltaY = (offsetY / FRAME_HEIGHT) * 200;
+	
+	servo_set_delta(SERVO_Y, (int16_t)deltaX);
+	servo_set_delta(SERVO_X, (int16_t)deltaY);
 }
 
 void detect_faces(Mat frame) {
@@ -98,16 +130,16 @@ uint8_t opencv_events() {
 	
 	switch(key) {
 		case 65362: //up
-			servo_set_delta(SERVO_X, -15);
+			currentServoX = servo_set_delta(SERVO_X, -15);
 		break;
 		case 65364: //down
-			servo_set_delta(SERVO_X, +15);
+			currentServoX = servo_set_delta(SERVO_X, +15);
 		break;
 		case 65361: //left
-			servo_set_delta(SERVO_Y, +15);
+			currentServoY = servo_set_delta(SERVO_Y, +15);
 		break;
 		case 65363: //right
-			servo_set_delta(SERVO_Y, -15);
+			currentServoY = servo_set_delta(SERVO_Y, -15);
 		break;
 		case 27: //ESC
 			return 1;
@@ -130,8 +162,13 @@ int main() {
 	Mat frame;
 	Mat mask;
 	Mat herp;
-	
+	Point2f foundCenter;
+	float foundRadius;
+
 	printf("Starting...\n");
+
+	pidX.setOutputLimits(1100.0, 1900.0f);
+	pidY.setOutputLimits(1100.0, 1900.0f);
 
 	cam.release();
 
@@ -153,8 +190,11 @@ int main() {
 	//face_cascade.load("haarcascade_fullbody.xml");
 	bgsub_init();
 
-	servo_set(SERVO_X, 1500);
-	servo_set(SERVO_Y, 1500);
+	currentServoX = 1500;
+	currentServoY = 1500;
+
+	servo_set(SERVO_X, currentServoX);
+	servo_set(SERVO_Y, currentServoY);
 	fflush(stdout);
 
 	while(opencv_events() == 0) {
@@ -164,8 +204,12 @@ int main() {
 
 		frame.convertTo(herp, -1, 2, 0);
 		mog1->apply(herp, mask);
-		//detect_blobs(mask);
-		opencv_flush(detect_blobs(mask));
+		
+		if( detect_blobs(mask, foundCenter, foundRadius) == 1 ) {
+			circle(frame, foundCenter, foundRadius, Scalar(255,0,0), 2, 1, 0 );
+			kill_target(foundCenter);
+		}
+		opencv_flush(frame);
 		
 		if (servo_update() == 0) {
 			break;
